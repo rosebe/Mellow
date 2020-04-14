@@ -45,6 +45,19 @@ let origGw = null
 let origGwScope = null
 let sendThrough = null
 var pacServer = null
+let originalDnsServers = null
+let defaultFakeDnsExcludes = (() => {
+  switch (process.platform) {
+    case 'win32':
+      const domains = [
+        'dns.msftncsi.com',
+        'msftconnecttest.com'
+      ]
+      return domains.join(',')
+    default:
+      return ''
+  }
+})()
 
 var tunName
 switch (process.platform) {
@@ -117,7 +130,7 @@ const schema = {
   },
   systemDns: {
     type: 'string',
-    default: '223.5.5.5,1.1.1.1'
+    default: '114.114.114.114,8.8.8.8'
   },
   systemProxy: {
     type: 'boolean',
@@ -130,7 +143,11 @@ const schema = {
   hideDockIcon: {
     type: 'boolean',
     default: false
-  }
+  },
+  fakeDnsExcludes: {
+    type: 'string',
+    default: defaultFakeDnsExcludes
+  },
 }
 const store = new Store({name: 'preference', schema: schema})
 
@@ -233,6 +250,7 @@ handleLagecyConfigFile()
 var md5Cmd
 var routeCmd
 var coreCmd
+var setDnsCmd
 switch(process.platform) {
   case 'linux':
     md5Cmd = path.join(helperInstallPath, 'md5sum')
@@ -243,6 +261,7 @@ switch(process.platform) {
     md5Cmd = path.join(helperInstallPath, 'md5sum')
     coreCmd = path.join(helperInstallPath, 'core')
     routeCmd = path.join(helperInstallPath, 'route')
+    setDnsCmd = path.join(helperResourcePath, 'setdnsservers')
     break
   case 'win32':
     coreCmd = path.join(helperResourcePath, 'core.exe')
@@ -534,6 +553,7 @@ async function startCore(callback) {
 
   if (store.get('fakeDns')) {
     params.push('-fakeDns')
+    params.push(...['-fakeDnsExcludes', store.get('fakeDnsExcludes')])
   }
 
   let env = Object.create(process.env)
@@ -589,6 +609,18 @@ async function startCore(callback) {
   if (callback !== null) {
     callback()
   }
+}
+
+function isPrivateIP(ip) {
+  return /^(::f{4}:)?10\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$/i.test(ip) ||
+  /^(::f{4}:)?192\.168\.([0-9]{1,3})\.([0-9]{1,3})$/i.test(ip) ||
+  /^(::f{4}:)?172\.(1[6-9]|2\d|30|31)\.([0-9]{1,3})\.([0-9]{1,3})$/i.test(ip) ||
+  /^(::f{4}:)?127\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$/i.test(ip) ||
+  /^(::f{4}:)?169\.254\.([0-9]{1,3})\.([0-9]{1,3})$/i.test(ip) ||
+  /^f[cd][0-9a-f]{2}:/i.test(ip) ||
+  /^fe80:/i.test(ip) ||
+  /^::1$/.test(ip) ||
+  /^::$/.test(ip)
 }
 
 async function configRoute() {
@@ -656,6 +688,13 @@ async function configRoute() {
         execSync(util.format('"%s" delete default -ifscope %s', routeCmd, origGwScope))
         execSync(util.format('"%s" add default %s', routeCmd, tunGw))
         execSync(util.format('"%s" add default %s -ifscope %s', routeCmd, origGw, origGwScope))
+
+        const dnsServers = require('dns').getServers()
+        if ((dnsServers.length == 0) || (isPrivateIP(dnsServers[0]))) {
+          execSync(util.format('"%s" "%s"', setDnsCmd, store.get('systemDns').split(',').join(' ')))
+          originalDnsServers = dnsServers
+          log.info('Set system DNS', store.get('systemDns'))
+        }
         break
       case 'win32':
         await sudoExec(util.format('"%s" %s %s', path.join(helperResourcePath, 'config_route.bat'), tunGw, tunName))
@@ -687,6 +726,11 @@ async function recoverRoute() {
           execSync(util.format('"%s" delete default', routeCmd))
           execSync(util.format('"%s" delete default -ifscope %s', routeCmd, origGwScope))
           execSync(util.format('"%s" add default %s', routeCmd, origGw))
+
+          if (originalDnsServers) {
+            execSync(util.format('"%s" "%s"', setDnsCmd, originalDnsServers.join(' ')))
+            log.info('Recover system DNS servers to', originalDnsServers.join(' '))
+          }
           break
         case 'win32':
           await sudoExec(util.format('"%s" %s', path.join(helperResourcePath, 'recover_route.bat'), tunName))
@@ -1293,12 +1337,16 @@ function buildTrayMenu() {
               })
               .then((r) => {
                 if (r) {
-                  // remove all whitespaces before store
-                  store.set('systemDns', r.replace(/\s/g,''))
+                  const dnsServers = r.replace(/\s/g,'').split(',')
+                  if (dnsServers.length == 0 || isPrivateIP(dnsServers[0])) {
+                    dialog.showMessageBox({message: 'invalid input'})
+                    return
+                  }
+                  store.set('systemDns', dnsServers.join(','))
                 }
               })
             },
-            visible: isWin32
+            visible: isWin32 || isDarwin
           },
           {
             label: i18n.t('Set UDP Timeout'),
@@ -1316,6 +1364,28 @@ function buildTrayMenu() {
                 if (r) {
                   // remove all whitespaces before store
                   store.set('udpTimeout', r.replace(/\s/g,''))
+                }
+              })
+            }
+          },
+          {
+            label: i18n.t('Fake DNS Excludes'),
+            type: 'normal',
+            click: (item) => {
+              prompt({
+                title: i18n.t('Exclude domains'),
+                label: i18n.t('Seperated by comma:'),
+                value: store.get('fakeDnsExcludes'),
+                inputAttrs: {
+                    type: 'text'
+                }
+              })
+              .then((r) => {
+                if (r) {
+                  let domains = r.replace(/\s/g,'').split(',')
+                  store.set('fakeDnsExcludes', domains.join(','))
+                } else {
+                  store.set('fakeDnsExcludes', '')
                 }
               })
             }

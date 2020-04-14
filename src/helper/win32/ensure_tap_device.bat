@@ -17,7 +17,6 @@ setlocal
 
 set TAP_WINDOWS_PATH=%1
 set DEVICE_NAME=%2
-set DEVICE_HWID=tap0901
 
 :: Because we've seen multiple failures due to commands (netsh, etc.) not being
 :: found, append some common directories to the PATH.
@@ -29,7 +28,6 @@ set PATH=%PATH%;%SystemRoot%\system32;%SystemRoot%\system32\wbem;%SystemRoot%\sy
 
 :: Check whether the device already exists.
 netsh interface show interface name=%DEVICE_NAME% >nul
-
 if %errorlevel% equ 0 (
   echo TAP network device already exists.
   goto :configure
@@ -48,7 +46,6 @@ if %errorlevel% equ 0 (
 set BEFORE_DEVICES=%tmp%\outlineinstaller-tap-devices-before.txt
 set AFTER_DEVICES=%tmp%\outlineinstaller-tap-devices-after.txt
 
-echo Creating TAP network device...
 echo Storing current network device list...
 wmic nic where "netconnectionid is not null" get netconnectionid > "%BEFORE_DEVICES%"
 if %errorlevel% neq 0 (
@@ -58,7 +55,10 @@ if %errorlevel% neq 0 (
 type "%BEFORE_DEVICES%"
 
 echo Creating TAP network device...
-%TAP_WINDOWS_PATH%\tapinstall install %TAP_WINDOWS_PATH%\OemVista.inf %DEVICE_HWID%
+for /f "tokens=4 delims=[.] " %%i in ('ver') do (
+  if %%i==10 %TAP_WINDOWS_PATH%\tap-windows-9.24.2-I601-Win10.exe /S
+  if %%i==6 %TAP_WINDOWS_PATH%\tap-windows-9.24.2-I601-Win7.exe /S
+)
 if %errorlevel% neq 0 (
   echo Could not create TAP network device. >&2
   exit /b 1
@@ -154,11 +154,14 @@ netsh interface set interface "%DEVICE_NAME%" admin=enabled
 :: )
 
 echo Set all adapters metric to auto.
-PowerShell -Command "& {Set-NetIPInterface -AutomaticMetric Enabled}"
+for /f "skip=3 tokens=4" %%a in ('netsh interface show interface') do (
+  netsh interface ip set interface %%a metric=automatic
+  netsh interface ipv6 set interface %%a metric=automatic
+)
 
 echo Set TAP adapter metric to 0.
-PowerShell -Command "& {Set-NetIPInterface -InterfaceAlias %DEVICE_NAME% -InterfaceMetric 0}"
+netsh interface ip set interface %DEVICE_NAME% metric=0
+netsh interface ipv6 set interface %DEVICE_NAME% metric=0
 
 echo TAP network device added successfully.
-
 exit /b 0
