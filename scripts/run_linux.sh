@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 EXE_FILE=core
 CONFIG_FILE=cfg.json
@@ -12,6 +12,10 @@ TUN_MASK=255.255.255.0
 ORIG_GW=`ip route get 1 | awk '{print $3;exit}'`
 ORIG_ST_SCOPE=`ip route get 1 | awk '{print $5;exit}'`
 ORIG_ST=`ip route get 1 | awk '{print $7;exit}'`
+
+if [ ! -z "$1" ]; then
+	CONFIG_FILE=$1
+fi
 
 if [ `id -u` -ne 0 ]; then
   echo 'Must run as root!'
